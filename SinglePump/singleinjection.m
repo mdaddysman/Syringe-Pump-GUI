@@ -30,3 +30,17 @@ function InjectOnOff(src,~)
 value = get(src,'Value');
 
 end
+
+function response = WritePort(obj,string)
+response = query(obj,string','%s\n','%s');
+end
+
+function obj = OpenPort(port)
+obj = serial(port,'BaudRate',115200,'Parity','none','DataBits',8,'StopBits',2,'FlowControl','none','Terminator','CR/LF'); 
+fopen(obj);
+end
+
+function ClosePort(obj)
+fclose(obj);
+delete(obj);
+end
