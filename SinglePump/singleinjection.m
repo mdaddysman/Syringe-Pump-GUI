@@ -1,39 +1,85 @@
 function singleinjection()
+global pumprun
 rh.fh = figure('Name','Single Syringe Pump Control','NumberTitle','off', ...
-    'Resize','off','Position',[50 50 300 300],'MenuBar','none','ToolBar','none');
+    'Resize','off','Position',[50 50 300 265],'MenuBar','none','ToolBar','none');
+
+pumprun = false;
+
+%settings for min, max, and default infuse rates in uL/min
+minrate = 1; maxrate = 1000; defaultrate = 500;
+minorrate = 1; majorrate = 10; 
+ratestep = [minorrate/(maxrate-minrate), majorrate/(maxrate-minrate)];
+
+mintime = 1; maxtime = 3600; defaulttime = 90;
+minortime = 1; majortime = 10; 
+timestep = [minortime/(maxtime-mintime), majortime/(maxtime-mintime)];
 
 %get com port strings
 coms = instrhwinfo('serial');
 comstrings = [{''};coms.AvailableSerialPorts];
 
-rh.cpsh = uicontrol('Style','popup','String',comstrings,'Position',[5 270 100 25],'FontSize',10);
-rh.ocph = uicontrol('Style','pushbutton','String','Open','Position',[107 270 60 25],'FontSize',10, ...
+rh.cpsh = uicontrol('Style','popup','String',comstrings,'Position',[5 235 100 25],'FontSize',10);
+rh.ocph = uicontrol('Style','pushbutton','String','Open','Position',[107 235 60 25],'FontSize',10, ...
     'BackgroundColor',[0.8,0.8,0.8]);
-rh.ccph = uicontrol('Style','pushbutton','String','Close','Position',[170 270 60 25],'FontSize',10, ...
+rh.ccph = uicontrol('Style','pushbutton','String','Close','Position',[170 235 60 25],'FontSize',10, ...
     'BackgroundColor',[0.8,0.8,0.8],'Enable','off');
-rh.stph = uicontrol('Style','togglebutton','String','Screen','Position',[233 270 60 25],'FontSize',10, ...
+rh.stph = uicontrol('Style','togglebutton','String','Screen','Position',[233 235 60 25],'FontSize',10, ...
     'BackgroundColor',[0.8,0.8,0.8],'Enable','off','Value',1);
 
 rh.pth = uicontrol('Style','text','String','Pump Output: ', ...
-    'Position',[5 240 290 25],'FontSize',10,'HorizontalAlignment','left');
+    'Position',[5 200 290 25],'FontSize',10,'HorizontalAlignment','left');
+
+rh.irth = uicontrol('Style','text','String',['Infuse Rate: ' num2str(defaultrate) ' uL/min'], ...
+    'FontWeight','bold','Position',[5 170 290 25],'FontSize',10,'HorizontalAlignment','left');
+rh.irsh = uicontrol('Style','slider','Position',[5 145 290 25],...
+    'Value',defaultrate,'Min',minrate,'Max',maxrate,'Enable','off','SliderStep',ratestep);
+
+rh.itth = uicontrol('Style','text','String',['Infuse Time: ' num2str(defaulttime) ' s'], ...
+    'FontWeight','bold','Position',[5 115 290 25],'FontSize',10,'HorizontalAlignment','left');
+rh.itsh = uicontrol('Style','slider','Position',[5 90 290 25],...
+    'Value',defaulttime,'Min',mintime,'Max',maxtime,'Enable','off','SliderStep',timestep);
 
 
 rh.trth = uicontrol('Style','text','String',['Time Remaining: ' num2str(0,'%02d') ':' num2str(0,'%04.1f')], ...
     'Position',[5 60 290 20],'FontSize',10,'FontWeight','bold','HorizontalAlignment','center');
 rh.sitb = uicontrol('Style','togglebutton','String','Start Injection','Position',[50 5 200 50], ...
-    'BackgroundColor',[0.8,0.8,0.8],'FontSize',12,'FontWeight','bold','Enable','off','Callback',{@InjectOnOff});
+    'BackgroundColor',[0.8,0.8,0.8],'FontSize',12,'FontWeight','bold','Enable','off');
 
 rh.timer = timer('ExecutionMode','fixedRate','Period',0.1,'TimerFcn',{@UpdateWindow,rh});
 start(rh.timer);
+set(rh.fh,'CloseRequestFcn',{@CloseGUI,rh});
 set(rh.ocph,'Callback',{@OpenCOM_Callback,rh,comstrings});
 set(rh.ccph,'Callback',{@CloseCOM_Callback,rh});
 set(rh.stph,'Callback',{@ToggleScreen_Callback});
-set(rh.fh,'CloseRequestFcn',{@CloseGUI,rh});
+set(rh.irsh,'Callback',{@InfuseRate_Callback,rh});
+set(rh.itsh,'Callback',{@InfuseTime_Callback,rh});
+set(rh.sitb,'Callback',{@InjectOnOff,rh});
+
+end
+
+function InfuseTime_Callback(src,~,rh)
+value = get(src,'Value');
+value = round(value);
+set(src,'Value',value);
+
+set(rh.itth,'String',['Infuse Time: ' num2str(value) ' s']);
+
+end
+
+function InfuseRate_Callback(src,~,rh)
+global pumpobj
+value = get(src,'Value');
+value = round(value);
+set(src,'Value',value);
+
+set(rh.irth,'String',['Infuse Rate: ' num2str(value) ' uL/min']);
+
+WritePort(pumpobj,['irate ' num2str(value) ' ul/min']); 
 
 end
 
 function UpdateWindow(~,~,rh)
-global pumpobj
+global pumpobj pumprun
 if(ishghandle(rh.fh))
     %check buffer and write if new text is there
     if isa(pumpobj,'serial')
@@ -46,7 +92,52 @@ if(ishghandle(rh.fh))
         end
     end
     
+    if pumprun
+        time = toc; %current run time
+        ltime = get(rh.itsh,'Value') - time;
+        if ltime <= 0
+            ltime = 0;
+            StopInfusion(rh);
+        end
+        lmin = floor(ltime/60);
+        lsec = ltime - 60*lmin;
+        set(rh.trth,'String',['Time Remaining: ' num2str(lmin,'%02d') ':' num2str(lsec,'%04.1f')]);        
+    end
+    
 end
+end
+
+function StopInfusion(rh)
+global pumpobj pumprun
+WritePort(pumpobj,'stop');
+
+set(rh.irsh,'Enable','on');
+set(rh.itsh,'Enable','on');
+set(rh.ccph,'Enable','on');
+set(rh.stph,'Enable','on');
+set(rh.sitb,'String','Start Injection','ForegroundColor','k','Value',0);
+pumprun = false;
+end
+
+function InjectOnOff(src,~,rh)
+global pumpobj pumprun
+value = get(src,'Value');
+
+if value == 1 %start the pump
+    set(rh.irsh,'Enable','off');
+    set(rh.itsh,'Enable','off');
+    set(rh.ccph,'Enable','off');
+    set(rh.stph,'Enable','off');    
+    set(src,'String','Stop Injection','ForegroundColor','r');
+    irate = get(rh.irsh,'Value');
+    WritePort(pumpobj,['irate ' num2str(irate) ' ul/min']);
+    WritePort(pumpobj,'irun');
+    tic
+    pumprun = true;
+else %stop the pump
+    StopInfusion(rh);
+end
+
 end
 
 function ToggleScreen_Callback(src,~)
@@ -72,7 +163,12 @@ if value > 1
     set(src,'Enable','off');
     set(rh.ccph,'Enable','on');
     set(rh.stph,'Enable','on');
+    set(rh.irsh,'Enable','on');
+    set(rh.itsh,'Enable','on');
+    set(rh.sitb,'Enable','on');
     WritePort(pumpobj,'ver');
+    irate = get(rh.irsh,'Value');
+    WritePort(pumpobj,['irate ' num2str(irate) ' ul/min']);
 end
 
 end
@@ -84,12 +180,10 @@ ClosePort(pumpobj);
 set(rh.ocph,'Enable','on');
 set(src,'Enable','off');
 set(rh.stph,'Enable','off','Value',1);
+set(rh.irsh,'Enable','off');
+set(rh.itsh,'Enable','off');
+set(rh.sitb,'Enable','off');
 
-
-end
-
-function InjectOnOff(src,~)
-value = get(src,'Value');
 
 end
 
@@ -121,6 +215,7 @@ if isa(obj,'serial')
     if isvalid(obj)
         %send stop command and turn on screen
         WritePort(obj,'dim 100');
+        WritePort(obj,'stop');
         fclose(obj);
         delete(obj);
     end
